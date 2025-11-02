@@ -13,6 +13,11 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <algorithm> 
+#include <sys/mman.h>
+#include <errno.h>
+#include <sys/uio.h>
 #include "constance.h"
 
 using std::string;
@@ -25,7 +30,8 @@ class HttpConn
         /* 主状态机的两种状态 */
         enum CHECK_STATE {
             CHECK_REQUESTLINE = 0,  // 检查请求行
-            CHECK_HEADER            // 检查请求头
+            CHECK_HEADER,            // 检查请求头
+            CHECK_CONTENT           // 检查消息体
         };
         /* 从状态机的状态 */
         enum LINE_STATUS {
@@ -42,6 +48,12 @@ class HttpConn
             FORBIDDEN_REQUEST,  // 客户对资源没有权限
             INTERNAL_ERROR,     // 服务器内部错误
             CLOSED_CONNECTION   // 客户端已经关闭连接
+        };
+
+        /* HTTP请求方法 */
+        enum METHOD {
+            GET,
+            POST
         };
 
     public:
@@ -84,7 +96,7 @@ class HttpConn
         void unmap();
 
         /* 填写回复内容 */
-        bool addResponse(string text);
+        bool addResponse(const char*, ...);
         
         /* 填写状态行 */
         bool addStatuLine(HTTP_CODE);
@@ -97,16 +109,16 @@ class HttpConn
         /* 填写空白行 */
         bool addBlankLine();
         /* 填写内容 */
-        bool addContent(string text);
+        // bool addContent(string text);
 
         /* 处理写的内容 */
-        bool processWrite(); 
+        bool processWrite(HTTP_CODE code); 
 
 
     private:
 
         /* 请求行相关信息 */
-        string m_method;
+        METHOD m_method;
         string m_url;
         string m_version;
 
@@ -130,9 +142,9 @@ class HttpConn
         int lineIdx;
 
         /* 请求文件相关信息 */
-        string flleName;        // 请求文件名
-        char* fileAddr;         // map后的映射地址
-        struct stat fileInfo;          // 文件详情
+        string fileName;            // 请求文件名
+        char* fileAddr;             // map后的映射地址
+        struct stat fileInfo;       // 文件详情
 
         /* 分散内存 */
         struct iovec iov[2];
