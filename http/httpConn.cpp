@@ -1,9 +1,21 @@
 #include "httpConn.h"
 
-int HttpConn::epollfd = 0;
-int HttpConn::userCount = 0;
+// 定义http响应的一些状态信息
+const string ok_200_title = "OK";
+const string error_400_title = "Bad Request";
+const string error_400_form = "Your request has bad syntax or is inherently impossible to staisfy.\n";
+const string error_403_title = "Forbidden";
+const string error_403_form = "You do not have permission to get file form this server.\n";
+const string error_404_title = "Not Found";
+const string error_404_form = "The requested file was not found on this server.\n";
+const string error_500_title = "Internal Error";
+const string error_500_form = "There was an unusual problem serving the request file.\n";
 
-string rootPath = "/home/ccb/code/Webserver/resources/";
+
+int HttpConn::epollfd = -1;
+std::atomic<int> HttpConn::userCount = 0;
+
+string rootPath = "/home/ccb/code/Webserver/resources";
 
 
 int setnoblocking(int fd)
@@ -15,25 +27,41 @@ int setnoblocking(int fd)
     return oldOpt;
 }
 
-int addFd(int epollfd, int fd, epoll_event* ev, bool isOneShot = false)
+void addFd(int epollfd, int fd, bool isOneShot = false)
 {
-    ev->events |= EPOLLET | EPOLLIN;
+    epoll_event ev;
+    ev.data.fd = fd;
+
+    ev.events = EPOLLET | EPOLLIN | EPOLLRDHUP;
     if(isOneShot)
     {
-        ev->events |= EPOLLONESHOT;
+        ev.events |= EPOLLONESHOT;
     }
 
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, ev);
+    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &ev);
+    setnoblocking(fd);
 }
 
-int removeFd(int epollfd, int fd)
+void removeFd(int epollfd, int fd)
 {
     epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, nullptr);
+    close(fd);
+}
+
+// 将事件重置为EPOLLONESHOT
+void modfd(int epollfd, int fd, int ev)
+{
+    epoll_event event;
+    event.data.fd = fd;
+    event.events = ev | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
+    epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
+
 }
 
 void HttpConn::init()
 {
         m_url = "";
+        m_method = GET;
         m_version = "";
         m_host = "";
         content_length = 0;
@@ -49,12 +77,13 @@ void HttpConn::init()
         lineIdx = 0;
 
        
-        string flleName = "";        
+        filePath = "";        
         fileAddr = nullptr;   
 
         iovCount = 0;
+        bytesHaveSend = 0;
+        bytesToSend = 0;
 
-        
         curState = CHECK_REQUESTLINE;
 }
 
@@ -62,6 +91,9 @@ void HttpConn::init(const int m_sockfd, const sockaddr_in& addr)
 {
     sockfd = m_sockfd;
     clntAddr = addr;
+
+    addFd(epollfd, sockfd, true);
+    ++userCount;
     init();
 }
 
@@ -76,14 +108,14 @@ HttpConn::LINE_STATUS HttpConn::paraseLine()
     for(; curIdx < readIdx; ++curIdx)
     {
 
-        if(curIdx + 1 >= readIdx)
-        {
-            return LINE_OPEN;
-        }
-
         if(readBuffer[curIdx] == '\r')
         {
-            if(readBuffer[curIdx + 1] == '\n')
+            /* 以\r 结尾 */
+            if(curIdx + 1 == readIdx)
+            {
+                return LINE_OPEN;
+            }
+            else if(readBuffer[curIdx + 1] == '\n')
             {
                 /* 设置结束标志 */
                 readBuffer[curIdx++] = '\0';
@@ -96,7 +128,7 @@ HttpConn::LINE_STATUS HttpConn::paraseLine()
         }
         else if(readBuffer[curIdx] == '\n')
         {
-            if(curIdx > 0 && (readBuffer[curIdx - 1] == '\r'))
+            if(curIdx > 1 && (readBuffer[curIdx - 1] == '\r'))
             {
                 /* 设置结束标志 */
                 readBuffer[curIdx - 1] = '\0';
@@ -112,7 +144,7 @@ HttpConn::LINE_STATUS HttpConn::paraseLine()
     return LINE_OPEN;
 }
 
-HttpConn::LINE_STATUS HttpConn::paraseRequestLine(string text)
+HttpConn::HTTP_CODE HttpConn::paraseRequestLine(string text)
 {
     /**
      * 处理请求行
@@ -123,13 +155,13 @@ HttpConn::LINE_STATUS HttpConn::paraseRequestLine(string text)
     auto idx = text.find_first_of(" ");
     if(idx == string::npos)
     {
-        return LINE_BAD;
+        return BAD_REQUEST;
     }
 
     string method = text.substr(0, idx);
     if (method.empty()) 
     {
-        return LINE_BAD;
+        return BAD_REQUEST;
     }
     // 统一转为大写（原地修改method）
     std::transform(method.begin(), method.end(), method.begin(), ::toupper);
@@ -153,7 +185,7 @@ HttpConn::LINE_STATUS HttpConn::paraseRequestLine(string text)
     idx = text.find_first_not_of(" ", idx + 1);
     if (idx == string::npos) 
     {
-        return LINE_BAD; // 跳过空格后无内容（无URL），格式错误
+        return BAD_REQUEST; // 跳过空格后无内容（无URL），格式错误
     }
 
     // 查找URL结束位置（下一个空格）
@@ -161,19 +193,24 @@ HttpConn::LINE_STATUS HttpConn::paraseRequestLine(string text)
     // 提取URL：如果没有下一个空格，说明URL到结尾（但HTTP请求行必须有版本，此处应视为错误）
     if (urlEnd == string::npos) 
     {
-        return LINE_BAD; // 无版本信息，格式错误
+        return BAD_REQUEST; // 无版本信息，格式错误
     }
     m_url = text.substr(idx, urlEnd - idx);
     if (m_url.empty()) 
     {
-        return LINE_BAD;
-    }   
+        return BAD_REQUEST;
+    }
+    
+    if(m_url.size() == 1 && m_url == "/")
+    {
+        m_url = "index.html";
+    }
 
     // 跳过空格，定位到版本起始位置
     idx = text.find_first_not_of(" ", urlEnd + 1);
     if (idx == string::npos) 
     {
-        return LINE_BAD; // 跳过空格后无版本内容，格式错误
+        return BAD_REQUEST; // 跳过空格后无版本内容，格式错误
     }
 
     // 提取版本（到字符串结尾）
@@ -182,13 +219,15 @@ HttpConn::LINE_STATUS HttpConn::paraseRequestLine(string text)
 
     if(m_version != "HTTP/1.1" && m_version != "HTTP/1.0")
     {
-        return LINE_BAD;
+        return BAD_REQUEST;
     }
-    
-    return LINE_OK;
+
+
+    curState = CHECK_HEADER;
+    return NO_REQUEST;
 }
 
-HttpConn::LINE_STATUS HttpConn::paraseRequestHeader(string text)
+HttpConn::HTTP_CODE HttpConn::paraseRequestHeader(string text)
 {
     /**
      * 处理请求头，请求头格式如下：
@@ -198,80 +237,157 @@ HttpConn::LINE_STATUS HttpConn::paraseRequestHeader(string text)
     
     if(text.empty())
     {
-        return LINE_OK;
+        if(content_length > 0)
+        {
+            curState = CHECK_CONTENT;
+
+            return NO_REQUEST;
+        }
+
+        return GET_REQUEST;
     }
     else if((idx = text.find("Host:")) != string::npos)
     {
         idx = text.find_first_not_of(" ", idx + 1);
 
-        if(idx == string::npos)
-            return LINE_BAD;
+        if(idx != string::npos)
+        {
+            m_host = text.substr(idx);
 
-        m_host = text.substr(idx);
+        }
 
     }
     else if((idx = text.find("Content-Length:")) != string::npos)
     {
         idx = text.find_first_not_of(" ", idx + 1);
 
-        if(idx == string::npos)
-            return LINE_BAD;
+        if(idx != string::npos)
+        {
+            content_length = std::stoi(text.substr(idx));
+        }
 
-        content_length = std::stoi(text.substr(idx));
         if(content_length < 0)
         {
-            return LINE_BAD;
+            return BAD_REQUEST;
         }
     }
     else if ((idx = text.find("Connection:")) != string::npos) 
     {
         idx = text.find_first_not_of(" ", idx + 1);
 
-        if(idx == string::npos)
-            return LINE_BAD;
+        if(idx != string::npos)
+        {
+            string tmp = text.substr(idx);
+            isKeepLive = (tmp == "keep-alive" ? true : false);
+        }
 
-        string tmp = text.substr(idx);
-        isKeepLive = tmp == "keep-alive" ? true : false;
     }
     else
     {
         // 其余字段不做处理
     }
     
-    return LINE_OK;
+    return NO_REQUEST;
 }
 
-HttpConn::LINE_STATUS HttpConn::paraseRequestContent(string text)
+HttpConn::HTTP_CODE HttpConn::paraseRequestContent(string text)
 {
     // 处理post提交的内容
-    if(!text.empty())
-        return LINE_OK;
+    if(readIdx >= (curIdx + content_length))
+    {
+        if(!text.empty())
+        {
+            requestBody = text;
+            return GET_REQUEST;
+        }
+    }
+
+    return NO_REQUEST;
 }
 
 HttpConn::HTTP_CODE HttpConn::do_request()
 {
     auto idx = m_url.find_last_of("/");
+
+    
+    string fileName = "";
     if(idx == string::npos)
     {
-        return BAD_REQUEST;
-    }
-
-    if(m_url == "/")
-    {
-        fileName = "index.html";
+        fileName = m_url;  
     }
     else
     {
+
+        // 将user=123&passwd=123提取出来
+        int i = 5;
+        auto split = requestBody.find_first_of("&");
+        string name = requestBody.substr(5, split - i);
+        string pwd = requestBody.substr(split + 8);
+
+        char flag = m_url[idx + 1];
+
+        switch (flag)
+        {
+            case '0':   // 注册界面   
+            {
+                fileName = "/register.html";
+                break;
+            }
+
+            case '1':   // 登录界面
+            {
+                fileName = "/log.html";
+                break;
+            }
+
+            case '2' :  // 验证登录信息
+            {
+                m_url = "/Welcome.html";
+                break;
+            }
+
+            case '3' :  // 执行注册操作
+            {
+                m_url = "/log.html";
+                break;
+            }
+
+            case '5':
+            {
+                fileName = "/picture.html";
+                break;
+            }
+
+            case '6' :
+            {
+                fileName = "/video.html";
+                break;
+            }
+
+            case '7':
+            {
+                fileName = "/fans.html";
+                break;
+            }
+                
+            default:
+            {
+                fileName = m_url.substr(idx);
+                break;
+            }
+        }
+
+
         fileName = m_url.substr(idx + 1);
     }
 
-    string realPath = rootPath + fileName;
 
-    // 检查是否是文件，并且具有权限可以读。
-    int ret = stat(realPath.c_str(), &fileInfo);
+    filePath = rootPath + fileName;
+
+    int ret = stat(filePath.c_str(), &fileInfo);
     if(ret == -1)
     {
-        return BAD_REQUEST;
+        return NO_RESOURCE;
     }
 
     // 检查是否为普通文件（非目录、管道等）
@@ -280,8 +396,15 @@ HttpConn::HTTP_CODE HttpConn::do_request()
         return BAD_REQUEST; // 不是普通文件
     }
 
+    // 检查权限
+    if(!(fileInfo.st_mode & S_IROTH))
+    {
+        return FORBIDDEN_REQUEST;
+    }
+
+
     // 获得文件描述符
-    int fd = open(realPath.c_str(), O_RDONLY);
+    int fd = open(filePath.c_str(), O_RDONLY);
     if(fd == -1)
     {
         return INTERNAL_ERROR;
@@ -293,7 +416,7 @@ HttpConn::HTTP_CODE HttpConn::do_request()
     // 关闭文件描述符
     close(fd);
 
-    return GET_REQUEST;
+    return FILE_REQUETS;
 }
 
 void HttpConn::unmap()
@@ -301,35 +424,32 @@ void HttpConn::unmap()
     if(fileAddr)
     {
         munmap(fileAddr, fileInfo.st_size);
+        fileAddr = nullptr;
     }
 }
 
 bool HttpConn::addResponse(const char* format, ...)
 {
-    va_list list;
-    
+    if(writeIdx >= WRITE_BUFF_SIZE) return false;
+
+    va_list arg_list;
+    va_start(arg_list, format);
+    int len = vsnprintf(writeBuffer + writeIdx, WRITE_BUFF_SIZE - writeIdx - 1, format, arg_list);
+    if(len >= (WRITE_BUFF_SIZE - writeIdx - 1))
+    {
+        va_end(arg_list);
+        return false;
+    }
+
+    writeIdx += len;
+    va_end(arg_list);
+
+    return true;
 }
 
-bool HttpConn::addStatuLine(HTTP_CODE code)
+bool HttpConn::addStatuLine(int code, string text)
 {
-    if(code == GET_REQUEST)
-    {
-        return addResponse("%s %d %s\r\n", m_version, 200, "OK");
-    }
-    else if (code == BAD_REQUEST)
-    {
-        return addResponse("%s %d %s\r\n", m_version, 404, "Not Found");
-    }
-    else if (code == FORBIDDEN_REQUEST)
-    {
-        return addResponse("%s %d %s\r\n", m_version, 403, "");
-    }
-    else
-    {
-
-    }
-    
-    return false;
+    return addResponse("%s %d %s\r\n", m_version, code, text.c_str());
 }
 
 bool HttpConn::addHeader(int len)
@@ -341,23 +461,35 @@ bool HttpConn::addHeader(int len)
 
 bool HttpConn::addContentLen(int len)
 {
-    return addResponse("Content-Length: %d\r\n", fileInfo.st_size);
+    return addResponse("Content-Length:%d\r\n", len);
+}
+
+bool HttpConn::addContentType()
+{
+    return addResponse("Content-Type:%s\r\n", "text/html");
 }
 
 bool HttpConn::addIsKeepLive()
 {
     string conn = (isKeepLive ? "keep-alive" : "closed");
-    return addResponse("Connection: %s\r\n", conn);
+    return addResponse("Connection: %s\r\n", conn.c_str());
 }
 
 bool HttpConn::addBlankLine()
 {
-    return addResponse("\r\n");
+    return addResponse("%s","\r\n");
+}
+
+bool HttpConn::addContent(string text)
+{
+    return addResponse("%s", text.c_str());
 }
 
 
 bool HttpConn::readFromClnt()
 {
+    if(readIdx >= READ_BUFF_SIZE) return false;
+
     int len = 0;
     while(true)
     {
@@ -374,9 +506,8 @@ bool HttpConn::readFromClnt()
         }
         else if(len == 0)
         {
-            // 关闭连接
-            closeConn();
-            break;
+            // 客户端关闭连接了
+            return false;
         }
         else if(len > 0)
         {
@@ -389,11 +520,60 @@ bool HttpConn::readFromClnt()
 
 bool HttpConn::writeToClnt()
 {
-    int ret = writev(sockfd, iov, iovCount);
-    if(ret == -1)
+    int ret = 0;
+    if(bytesToSend == 0)
     {
-        return false;
+        modfd(epollfd, sockfd, EPOLLIN);
+        init();
+        return true;
     }
+
+    while(true)
+    {
+        ret = writev(sockfd, iov, iovCount);
+        if(ret == -1)
+        {
+            if(errno == EAGAIN)
+            {
+                modfd(epollfd, sockfd, EPOLLOUT);
+                return true;
+            }
+            unmap();
+            return false;
+        }
+
+        bytesHaveSend += ret;
+        bytesToSend -= ret;
+
+        if(bytesHaveSend >= iov[0].iov_len)
+        {
+            iov[0].iov_len = 0;
+            iov[1].iov_base = fileAddr + (bytesHaveSend - writeIdx);
+            iov[1].iov_len = bytesToSend;
+        }
+        else
+        {
+            iov[0].iov_base = writeBuffer + bytesHaveSend;
+            iov[0].iov_len = iov[0].iov_len - bytesHaveSend;
+        }
+
+        if(bytesToSend <= 0)
+        {
+            unmap();
+            modfd(epollfd, sockfd, EPOLLIN);
+            if(isKeepLive)
+            {
+                init();
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+    }
+
 
     return true;
 }
@@ -401,97 +581,177 @@ bool HttpConn::writeToClnt()
 
 void HttpConn::closeConn(bool isClose)
 {
-    if(isClose)
+    if(isClose && sockfd != -1)
     {
         removeFd(epollfd, sockfd);
-        close(sockfd);
+        sockfd = -1;
+        --userCount;
     }
 
-    init();
 }
 
 HttpConn::HTTP_CODE HttpConn::processRead()
 {
-    
-    curState = CHECK_REQUESTLINE;
-    LINE_STATUS curLineStatu = LINE_OPEN;
+    HTTP_CODE code = NO_REQUEST;
+    LINE_STATUS curLineStatu = LINE_OK;
     
     char* text = nullptr;
 
-    while(curState != CHECK_CONTENT || (curLineStatu = paraseLine()) == LINE_OK)
+    while((curState == CHECK_CONTENT && curLineStatu == LINE_OK) || ((curLineStatu = paraseLine()) == LINE_OK)) 
     {
         text = getOneLine();
+        lineIdx = curIdx;
+
         switch (curState)
         {
             case CHECK_REQUESTLINE :
             {
-                curLineStatu = paraseRequestLine(string(text));
-                if(curLineStatu == LINE_OK)
-                {
-                    curState = CHECK_HEADER;
-                }
-                else if(curLineStatu == LINE_BAD)
+                code = paraseRequestLine(string(text));
+                if(code == BAD_REQUEST)
                 {
                     return BAD_REQUEST;
-                }
 
+                }
+ 
+                break;
             }
 
             case CHECK_HEADER :
             {
-                curLineStatu = paraseRequestHeader(string(text));
+                code = paraseRequestHeader(string(text));
                 
-                if(curLineStatu == LINE_OK)
+                if(code == GET_REQUEST)
                 {
-                    curState = CHECK_CONTENT;
                     return do_request();
                 }
-                else if(curLineStatu == LINE_BAD)
+                else if(code == BAD_REQUEST)
                 {
                     return BAD_REQUEST;
                 }
 
+                break;
             }
 
             case CHECK_CONTENT :
             {
-                curLineStatu = paraseRequestContent(string(text));
+                code = paraseRequestContent(string(text));
                 
-                if(curLineStatu == LINE_OK)
+                if(code == GET_REQUEST)
                 {
-                    curState = CHECK_HEADER;
-
                     return do_request();
                 }
-                else if(curLineStatu == LINE_BAD)
-                {
-                    return BAD_REQUEST;
-                }
+                curLineStatu = LINE_OPEN;
+
+                break;
+
+            }
+
+            default :
+            {
+                return INTERNAL_ERROR;
             }
         }
 
     }
 
-    return BAD_REQUEST;
+    return NO_REQUEST;
 }
 
 void HttpConn::process()
 {
     HTTP_CODE code = processRead();
 
-    processWrite(code);
+    if(code == NO_REQUEST)
+    {
+        modfd(epollfd, sockfd, EPOLLIN);
+        return;
+    }
+
+    bool ret = processWrite(code);
+    if(!ret)
+    {
+        closeConn();
+    }
+
+    modfd(epollfd, sockfd, EPOLLOUT);
 }
 
 bool HttpConn::processWrite(HTTP_CODE code)
 {
-    addStatuLine(code);
-    addHeader(fileInfo.st_size);
+    switch (code)
+    {
+    case INTERNAL_ERROR:
+    {
+        addStatuLine(500, error_500_title);
+        addHeader(error_500_form.size());
+        if(!addContent(error_500_form))
+        {
+            return false;
+        }
+        break;
+    }
+
+    case BAD_REQUEST:
+    {
+        addStatuLine(404, error_404_title);
+        addHeader(error_404_form.size());
+        if(!addContent(error_404_form))
+        {
+            return false;
+        }
+
+        break;
+    }
+
+    case FORBIDDEN_REQUEST:
+    {
+        addStatuLine(403, error_403_title);
+        addHeader(error_403_form.size());
+        if(!addContent(error_403_form))
+        {
+            return false;
+        }
+
+        break;
+    }
+
+    case FILE_REQUETS:
+    {
+        addStatuLine(200, ok_200_title);
+        if(fileInfo.st_size != 0)
+        {
+
+            addHeader(fileInfo.st_size);
+    
+            iov[0].iov_base = writeBuffer;
+            iov[0].iov_len = writeIdx;
+    
+            iov[1].iov_base = fileAddr;
+            iov[1].iov_len = fileInfo.st_size;
+            iovCount = 2;
+            bytesToSend = writeIdx + fileInfo.st_size;
+            return true;
+        }
+        else
+        {
+            const string ok_string = "<html><body></body></html>";
+            addHeader(ok_string.size());
+            if(!addContent(ok_string))
+            {
+                return false;
+            }
+        }
+    }
+    
+    default:
+        {
+            return false;
+        }
+    }
+
     iov[0].iov_base = writeBuffer;
     iov[0].iov_len = writeIdx;
-    iov[1].iov_base = fileAddr;
-    iov[1].iov_len = fileInfo.st_size;
-    iovCount = 2;
-
+    iovCount = 1;
+    bytesToSend = writeIdx;
     return true;
-
 }

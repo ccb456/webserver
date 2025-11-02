@@ -18,7 +18,9 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <sys/uio.h>
-#include "constance.h"
+#include <atomic>
+#include <cstdarg>
+#include "../constance.h"
 
 using std::string;
 
@@ -28,26 +30,32 @@ class HttpConn
 
     public:
         /* 主状态机的两种状态 */
-        enum CHECK_STATE {
+        enum CHECK_STATE 
+        {
             CHECK_REQUESTLINE = 0,  // 检查请求行
             CHECK_HEADER,            // 检查请求头
             CHECK_CONTENT           // 检查消息体
         };
         /* 从状态机的状态 */
-        enum LINE_STATUS {
+        enum LINE_STATUS 
+        {
             LINE_OK,            // 读到完整的一行
             LINE_OPEN,          // 没有读到完整的一行
             LINE_BAD            // 行出错
         };
 
         /* 处理HTTP的结果*/
-        enum HTTP_CODE {
+        enum HTTP_CODE 
+        {
             NO_REQUEST,         // 请求不完整，需要继续读取数据
             GET_REQUEST,        // 获得一个完整的请求
             BAD_REQUEST,        // 请求格式错误
+            NO_RESOURCE,        // 没有这个资源
+            FILE_REQUETS,       // 文件资源
             FORBIDDEN_REQUEST,  // 客户对资源没有权限
             INTERNAL_ERROR,     // 服务器内部错误
             CLOSED_CONNECTION   // 客户端已经关闭连接
+
         };
 
         /* HTTP请求方法 */
@@ -58,11 +66,11 @@ class HttpConn
 
     public:
         static int epollfd;
-        static int userCount;
+        static std::atomic<int> userCount;
 
     public:
-        HttpConn() = delete;
-        ~HttpConn(){ if(fileAddr) unmap(); };
+        HttpConn() {};
+        ~HttpConn(){};
 
     public:
         void init(const int sockfd, const sockaddr_in& addr);
@@ -71,6 +79,10 @@ class HttpConn
         void process();         // 运行
 
         void closeConn(bool isClose = true);
+        sockaddr_in* getAddr() 
+        {
+            return &clntAddr;
+        }
     
     private:
         void init();
@@ -83,11 +95,11 @@ class HttpConn
         /* 解析一行 */
         LINE_STATUS paraseLine();
         /* 解析请求行 */ 
-        LINE_STATUS paraseRequestLine(string text);
+        HTTP_CODE paraseRequestLine(string text);
         /* 解析请求头 */
-        LINE_STATUS paraseRequestHeader(string text);
+        HTTP_CODE paraseRequestHeader(string text);
         /* 解析请求内容 */
-        LINE_STATUS paraseRequestContent(string text);
+        HTTP_CODE paraseRequestContent(string text);
 
         /* 执行请求 */
         HTTP_CODE do_request();
@@ -99,17 +111,19 @@ class HttpConn
         bool addResponse(const char*, ...);
         
         /* 填写状态行 */
-        bool addStatuLine(HTTP_CODE);
+        bool addStatuLine(int, string);
         /* 填写消息头*/
         bool addHeader(int contentLength);
         /* 添加内容长度 */
         bool addContentLen(int contentLen);
+        /* 添加内容类型 */
+        bool addContentType();
         /* 添加是否保持连接 */
         bool addIsKeepLive();
         /* 填写空白行 */
         bool addBlankLine();
         /* 填写内容 */
-        // bool addContent(string text);
+        bool addContent(string text);
 
         /* 处理写的内容 */
         bool processWrite(HTTP_CODE code); 
@@ -127,6 +141,9 @@ class HttpConn
         int content_length;
         bool isKeepLive;
 
+        /* 请求体相关信息 */
+        string requestBody;
+
         /* 请求客户端的信息 */
         int sockfd;
         sockaddr_in clntAddr;
@@ -142,7 +159,7 @@ class HttpConn
         int lineIdx;
 
         /* 请求文件相关信息 */
-        string fileName;            // 请求文件名
+        string filePath;            // 请求文件的路径
         char* fileAddr;             // map后的映射地址
         struct stat fileInfo;       // 文件详情
 
@@ -152,6 +169,10 @@ class HttpConn
 
         /* 主状态机的状态 */
         CHECK_STATE curState;
+
+        /* 写入数据的时候用到*/
+        int bytesToSend;
+        int bytesHaveSend;
         
 };
 
