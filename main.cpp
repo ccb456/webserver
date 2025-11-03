@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <iostream>
+#include <memory>
 
 #include "./http/httpConn.h"
 #include "./pool/threadPool/threadPool.h"
@@ -58,10 +59,50 @@ void timer_handler()
 
 int main(int argc, char** argv)
 {
-    if(argc <= 1)
+    if(argc <= 2)
     {
-        
+        cout << "usage: <ip> <port>" << endl;
         return 1;
     }
+
+    string ip = argv[1];
+    int port = atoi(argv[2]);
+
+    /* 忽略SIGPIPE信号 */
+    addsig(SIGPIPE, SIG_IGN);
+
+    /* 创建线程池 */
+    std::shared_ptr<ThreadPool> threadsPool(new ThreadPool(4));
+
+    /* 预先创建HTTP连接 */
+    std::vector<HttpConn> users(MAX_FD);
+
+    /* 套接字 */
+    int listenFd = socket(PF_INET, SOCK_STREAM, 0);
+    assert(listenFd >= 0);
+    
+    /* 绑定地址*/
+    sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    inet_pton(AF_INET, ip.c_str(), &serverAddr.sin_addr);
+
+    int ret = bind(listenFd, (struct sockaddr*)(&serverAddr), sizeof(serverAddr));
+    assert(ret >= 0);
+    ret = listen(listenFd, 8);
+    assert(ret >= 0);
+    epoll_event events[MAX_EVENT_NUMBER];
+    
+
+   
+    
+
+
+
+
+
+
+
 }
 
