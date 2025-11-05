@@ -1,5 +1,5 @@
-#ifndef SQLCONNPOOL_H
-#define SQLCONNPOOL_H
+#ifndef SQLCONNPOOLRAII_H
+#define SQLCONNPOOLRAII_H
 
 #include "sqlConnPool.h"
 
@@ -9,7 +9,7 @@ public:
     SqlConnRAII(MYSQL** sql, SqlConnPool* connpool)
     {
         *sql = connpool->getConn();
-        mysql = sql;
+        mysql = *sql;
         connPool = connpool; 
     }
     ~SqlConnRAII()

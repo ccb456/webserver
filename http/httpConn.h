@@ -1,12 +1,9 @@
-/** 
- * HTTP连接类
- */
-
 #ifndef HTTPCONN_H
 #define HTTPCONN_H 
 
 #include <string>
 #include <cstring>
+#include <iostream>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/epoll.h>
@@ -20,7 +17,9 @@
 #include <sys/uio.h>
 #include <atomic>
 #include <cstdarg>
+#include <unordered_map>
 #include "../constance.h"
+#include "../pool/sqlConnPool/connPoolRAII.h"
 
 using std::string;
 
@@ -67,7 +66,10 @@ class HttpConn
     public:
         static int epollfd;
         static std::atomic<int> userCount;
-
+        
+        /* mysql 链接*/
+        MYSQL* m_mysql;
+        
     public:
         HttpConn() {};
         ~HttpConn(){};
@@ -83,6 +85,8 @@ class HttpConn
         {
             return &clntAddr;
         }
+
+        void initMySQLResult(SqlConnPool* connPool);
     
     private:
         void init();
@@ -173,7 +177,11 @@ class HttpConn
         /* 写入数据的时候用到*/
         int bytesToSend;
         int bytesHaveSend;
+
+        /*  是否启动 CGI*/
+        bool isCGI;
+
         
 };
 
- #endif
+#endif

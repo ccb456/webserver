@@ -74,11 +74,18 @@ int main(int argc, char** argv)
     /* 忽略SIGPIPE信号 */
     addsig(SIGPIPE, SIG_IGN);
 
-    /* 创建线程池 */
-    ThreadPool* threadsPool = new ThreadPool(4);
 
+    /* 创建数据库连接池 */
+    SqlConnPool* connPool = SqlConnPool::getInstance();
+    connPool->init("localhost", 3306, "ccb", "123456", "webserver", 4);
+      /* 创建线程池 */
+    // ThreadPool<HttpConn>* threadsPool = new ThreadPool<HttpConn>(1,4, connPool);
+    std::shared_ptr<ThreadPool<HttpConn>> threadsPool(new ThreadPool<HttpConn>(1,4, connPool));
+    
     /* 预先创建HTTP连接 */
     std::vector<HttpConn> users(MAX_FD);
+    /* 读取用户表信息 */
+    users[0].initMySQLResult(connPool);
 
     /* 套接字 */
     int listenFd = socket(PF_INET, SOCK_STREAM, 0);
@@ -221,9 +228,9 @@ int main(int argc, char** argv)
                         #ifdef debug
                             cout << "deal with the client: " << inet_ntoa(users[sockfd].getAddr()->sin_addr);
                         #endif
-
+                        
                         // 线程池中加入任务
-                        threadsPool->addTask(users[sockfd].process);
+                        threadsPool->addTask(&users[sockfd]);
 
                         // 调整定时器
                         heapTimer.adjust(sockfd, 3 * TIMESLOT);
@@ -269,7 +276,6 @@ int main(int argc, char** argv)
     close(listenFd);
     close(pipefd[1]);
     close(pipefd[0]);
-    delete threadsPool;
     return 0;
     
 }

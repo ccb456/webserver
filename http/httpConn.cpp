@@ -17,6 +17,10 @@ std::atomic<int> HttpConn::userCount = 0;
 
 string rootPath = "/home/ccb/code/Webserver/resources";
 
+/* 保存数据库中的用户信息 */
+std::unordered_map<string, string> usersInfo;
+std::mutex connMutex;
+
 
 int setnoblocking(int fd)
 {
@@ -65,7 +69,8 @@ void HttpConn::init()
         m_version = "";
         m_host = "";
         content_length = 0;
-        isKeepLive = true;
+        isKeepLive = false;
+        isCGI = false;
        
         memset(readBuffer, 0, READ_BUFF_SIZE);
         memset(writeBuffer, 0, WRITE_BUFF_SIZE);
@@ -78,7 +83,8 @@ void HttpConn::init()
 
        
         filePath = "";        
-        fileAddr = nullptr;   
+        fileAddr = nullptr;  
+        m_mysql = nullptr; 
 
         iovCount = 0;
         bytesHaveSend = 0;
@@ -96,6 +102,36 @@ void HttpConn::init(const int m_sockfd, const sockaddr_in& addr)
     ++userCount;
     init();
 }
+
+/* 初始化mysql结果 */
+void HttpConn::initMySQLResult(SqlConnPool* connPool)
+{
+    SqlConnRAII conn(&m_mysql, connPool);
+    string sql = "select username,passwd FROM user";
+    mysql_query(m_mysql, sql.c_str());
+
+    //从表中检索完整的结果集
+    MYSQL_RES *result = mysql_store_result(m_mysql);
+
+    //返回结果集中的列数
+    // int num_fields = mysql_num_fields(result);
+
+    //返回所有字段结构的数组
+    MYSQL_FIELD *fields = mysql_fetch_fields(result);
+
+    //从结果集中获取下一行，将对应的用户名和密码，存入map中
+    while (MYSQL_ROW row = mysql_fetch_row(result))
+    {
+        string temp1(row[0]);
+        string temp2(row[1]);
+        usersInfo[temp1] = temp2;
+    }
+
+    // 释放资源
+    mysql_free_result(result);
+    
+}
+
 
 HttpConn::LINE_STATUS HttpConn::paraseLine()
 {
@@ -201,7 +237,7 @@ HttpConn::HTTP_CODE HttpConn::paraseRequestLine(string text)
         return BAD_REQUEST;
     }
     
-    if(m_url.size() == 1 && m_url == "/")
+    if(m_url == "/")
     {
         m_url = "index.html";
     }
@@ -246,41 +282,34 @@ HttpConn::HTTP_CODE HttpConn::paraseRequestHeader(string text)
 
         return GET_REQUEST;
     }
-    else if((idx = text.find("Host:")) != string::npos)
+
+    idx = text.find_first_of(":");
+    if(idx == string::npos)
     {
-        idx = text.find_first_not_of(" ", idx + 1);
-
-        if(idx != string::npos)
-        {
-            m_host = text.substr(idx);
-
-        }
-
+        return BAD_REQUEST;
     }
-    else if((idx = text.find("Content-Length:")) != string::npos)
+
+    string key = text.substr(0, idx);
+    string value = text.substr(idx + 2);
+
+
+    if(key =="Host")
     {
-        idx = text.find_first_not_of(" ", idx + 1);
+        m_host = value;
+    }
+    else if(key == "Content-Length")
+    {
 
-        if(idx != string::npos)
-        {
-            content_length = std::stoi(text.substr(idx));
-        }
-
+        content_length = std::stoi(value);
+        
         if(content_length < 0)
         {
             return BAD_REQUEST;
         }
     }
-    else if ((idx = text.find("Connection:")) != string::npos) 
+    else if (key == "Connection") 
     {
-        idx = text.find_first_not_of(" ", idx + 1);
-
-        if(idx != string::npos)
-        {
-            string tmp = text.substr(idx);
-            isKeepLive = (tmp == "keep-alive" ? true : false);
-        }
-
+        isKeepLive = (value == "keep-alive" ? true : false);
     }
     else
     {
@@ -307,25 +336,76 @@ HttpConn::HTTP_CODE HttpConn::paraseRequestContent(string text)
 
 HttpConn::HTTP_CODE HttpConn::do_request()
 {
+    char flag = 'a';
+    string fileName = "";
     auto idx = m_url.find_last_of("/");
 
-    
-    string fileName = "";
     if(idx == string::npos)
     {
         fileName = m_url;  
     }
-    else
+    else 
     {
+        if(idx + 1 < m_url.size())
+        {
+            flag = m_url[idx + 1];
+        }
+        // POST请求
+        if(isCGI && (flag == '2' || flag == '3'))
+        {
 
-        // 将user=123&passwd=123提取出来
-        int i = 5;
-        auto split = requestBody.find_first_of("&");
-        string name = requestBody.substr(5, split - i);
-        string pwd = requestBody.substr(split + 8);
+            // 将user=123&passwd=123提取出来
+            auto nameIdx = requestBody.find_first_of("=");
+            auto split = requestBody.find_first_of("&");
+            auto pwdIdx = requestBody.find_last_of("=");
+            string name = requestBody.substr(nameIdx + 1, split - nameIdx);
+            string pwd = requestBody.substr(pwdIdx + 1);
+            
+            /* 注册 */
+            if(flag == '3')
+            {
+                string sql = "insert into user(username, passwd) values('";
+                sql += name + "'" + pwd + ")";
 
-        char flag = m_url[idx + 1];
+                // 用户名已经存在了
+                if(usersInfo.count(name))
+                {
+                    m_url = "/registerError.html";
+                }
+                /* 新用户 */
+                else
+                {
+                    std::lock_guard<std::mutex> locker(connMutex);
+                    int ret = mysql_query(m_mysql, sql.c_str());
+                    usersInfo.insert(std::make_pair(name, pwd));
 
+                    if(!ret)
+                    {
+                        m_url = "/log.html";
+                    }
+                    else
+                    {
+                        m_url = "/registerError.html";
+                    }
+                }
+            }
+
+            /* 登录 */
+            else 
+            {
+                auto m_pwd = usersInfo.find(name);
+                if(m_pwd != usersInfo.end() && m_pwd->second == pwd)
+                {
+                    m_url = "/welcome.html";
+                }
+                else
+                {
+                    m_url = "/logError.html";
+                }
+            }
+        }
+
+        // GET 请求
         switch (flag)
         {
             case '0':   // 注册界面   
@@ -339,19 +419,6 @@ HttpConn::HTTP_CODE HttpConn::do_request()
                 fileName = "/log.html";
                 break;
             }
-
-            case '2' :  // 验证登录信息
-            {
-                m_url = "/Welcome.html";
-                break;
-            }
-
-            case '3' :  // 执行注册操作
-            {
-                m_url = "/log.html";
-                break;
-            }
-
             case '5':
             {
                 fileName = "/picture.html";
@@ -372,17 +439,18 @@ HttpConn::HTTP_CODE HttpConn::do_request()
                 
             default:
             {
-                fileName = m_url.substr(idx);
+                fileName = m_url;
                 break;
             }
         }
 
-
-        fileName = m_url.substr(idx + 1);
     }
 
 
     filePath = rootPath + fileName;
+    #ifdef debug
+        std::cout << "filePath: " << filePath << std::endl;
+    #endif
 
     int ret = stat(filePath.c_str(), &fileInfo);
     if(ret == -1)
