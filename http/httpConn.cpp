@@ -49,6 +49,9 @@ void addFd(int epollfd, int fd, bool isOneShot = false)
 void removeFd(int epollfd, int fd)
 {
     epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, nullptr);
+    #ifdef debug
+        std::cout << "fd: " << fd << " closed !!!" << std::endl;
+    #endif
     close(fd);
 }
 
@@ -93,13 +96,18 @@ void HttpConn::init()
         curState = CHECK_REQUESTLINE;
 }
 
-void HttpConn::init(const int m_sockfd, const sockaddr_in& addr) 
+void HttpConn::init(const int m_sockfd, const sockaddr_in addr) 
 {
     sockfd = m_sockfd;
     clntAddr = addr;
 
     addFd(epollfd, sockfd, true);
     ++userCount;
+
+    #ifdef debug
+        std::cout << "connection the client: " << inet_ntoa(addr.sin_addr) << std::endl;
+    #endif
+
     init();
 }
 
@@ -239,7 +247,7 @@ HttpConn::HTTP_CODE HttpConn::paraseRequestLine(string text)
     
     if(m_url == "/")
     {
-        m_url = "index.html";
+        m_url = "/index.html";
     }
 
     // 跳过空格，定位到版本起始位置
@@ -517,7 +525,7 @@ bool HttpConn::addResponse(const char* format, ...)
 
 bool HttpConn::addStatuLine(int code, string text)
 {
-    return addResponse("%s %d %s\r\n", m_version, code, text.c_str());
+    return addResponse("%s %d %s\r\n", m_version.c_str(), code, text.c_str());
 }
 
 bool HttpConn::addHeader(int len)
@@ -532,7 +540,7 @@ bool HttpConn::addContentLen(int len)
 
 bool HttpConn::addContentType()
 {
-    return addResponse("Content-Type:%s\r\n", "text/html");
+    return addResponse("Content-Type:%s\r\n", "text/html; charset=UTF-8");
 }
 
 bool HttpConn::addIsKeepLive()

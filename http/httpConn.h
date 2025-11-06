@@ -75,7 +75,7 @@ class HttpConn
         ~HttpConn(){};
 
     public:
-        void init(const int sockfd, const sockaddr_in& addr);
+        void init(const int sockfd, const sockaddr_in addr);
         bool writeToClnt();     // 向客户端发送信息
         bool readFromClnt();    // 读一次数据
         void process();         // 运行

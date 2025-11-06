@@ -57,6 +57,11 @@ void timer_handler()
     alarm(TIMESLOT);
 }
 
+void cb_func(HttpConn* httpconn)
+{
+    httpconn->closeConn();
+}
+
 
 int main(int argc, char** argv)
 {
@@ -146,18 +151,24 @@ int main(int argc, char** argv)
             if(sockfd == listenFd)
             {
                 sockaddr_in clntAddr;
-                socklen_t addrLen = 0;
+                socklen_t addrLen = sizeof(clntAddr);
                 
                 /* listenfd ET 模型*/
                 int connfd = -1;
                 while(1)
                 {
                     connfd = accept(listenFd, (struct sockaddr*)&clntAddr, &addrLen);
+
                     if(connfd < 0)
                     {
-                        #ifdef debug
-                            cout << "accept error" << endl;
-                        #endif
+                        // 仅处理非 EAGAIN/EWOULDBLOCK 的错误
+                        if(errno != EAGAIN && errno != EWOULDBLOCK)
+                        {
+                            #ifdef debug
+                                cout << "accept error: " << strerror(errno) << endl;  // 打印具体错误
+                            #endif
+                        }
+
                         break;
                     }
     
@@ -168,14 +179,16 @@ int main(int argc, char** argv)
                         #endif
                         break;
                     }
+
+                    #ifdef debug
+                        cout << "新连接: connfd = " << connfd << endl;
+                    #endif
                     
                     // 分配一个http并初始化连接
                     users[connfd].init(connfd, clntAddr);
     
                     // 设置定时器
-                    heapTimer.add(connfd, 3 * TIMESLOT, [&user = users[connfd]]() { 
-                    user.closeConn(); 
-                });
+                    heapTimer.add(connfd, 3 * TIMESLOT, std::bind(cb_func, &users[connfd]));
 
                 }
 
@@ -220,54 +233,53 @@ int main(int argc, char** argv)
                         }
                     }
                 }
+            }
 
-                /* 处理客户端连接上接到的数据 */
-                else if(events[i].events & EPOLLIN)
+            /* 处理客户端连接上接到的数据 */
+            else if(events[i].events & EPOLLIN)
+            {
+                if(users[sockfd].readFromClnt())
                 {
-                    if(users[sockfd].readFromClnt())
-                    {
-                        #ifdef debug
-                            cout << "deal with the client: " << inet_ntoa(users[sockfd].getAddr()->sin_addr);
-                        #endif
-                        
-                        // 线程池中加入任务
-                        threadsPool->addTask(&users[sockfd]);
+                    #ifdef debug
+                        cout << "deal with the client: " << inet_ntoa(users[sockfd].getAddr()->sin_addr) << endl;
+                    #endif
+                    
+                    // 线程池中加入任务
+                    threadsPool->addTask(&users[sockfd]);
 
-                        // 调整定时器
-                        heapTimer.adjust(sockfd, 3 * TIMESLOT);
-                    }
-                    else // 读失败
-                    {
-                        heapTimer.doWork(sockfd);
-                    }
+                    // 调整定时器
+                    heapTimer.adjust(sockfd, 3 * TIMESLOT);
                 }
-                /* 向客户端写数据 */
-                else if(events[i].events & EPOLLOUT)
+                else // 读失败
                 {
-                    if(users[sockfd].writeToClnt())
-                    {
-                        #ifdef debug
-                        cout << "send data to the client" << inet_ntoa(users[sockfd].getAddr()->sin_addr) << endl;
-                        #endif
-
-                        // 调整定时器
-                        heapTimer.adjust(sockfd, 3 * TIMESLOT);
-                    }
-                    else
-                    {
-                        heapTimer.doWork(sockfd);
-                    }
+                    heapTimer.doWork(sockfd);
                 }
-
-
-                // 出现超时信号了
-                if(timeout)
+            }
+            /* 向客户端写数据 */
+            else if(events[i].events & EPOLLOUT)
+            {
+                if(users[sockfd].writeToClnt())
                 {
-                    timer_handler();
-                    timeout = false;
-                }
+                    #ifdef debug
+                    cout << "send data to the client " << inet_ntoa(users[sockfd].getAddr()->sin_addr) << endl;
+                    #endif
 
-            } 
+                    // 调整定时器
+                    heapTimer.adjust(sockfd, 3 * TIMESLOT);
+                }
+                else
+                {
+                    heapTimer.doWork(sockfd);
+                }
+            }
+
+
+            // 出现超时信号了
+            if(timeout)
+            {
+                timer_handler();
+                timeout = false;
+            }
 
         }
     }

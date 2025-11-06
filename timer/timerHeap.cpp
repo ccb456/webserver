@@ -2,7 +2,7 @@
 
 HeapTimer::HeapTimer()
 {
-    m_heap.resize(64);
+    // m_heap.resize(64);
 }
 
 HeapTimer::~HeapTimer()
@@ -43,7 +43,7 @@ void HeapTimer::swapNode(size_t i, size_t j)
 bool HeapTimer::shiftDown(size_t idx, size_t n)
 {
     assert(idx >= 0 && idx < m_heap.size());
-    assert(n >= 0 && n < m_heap.size());
+    assert(n >= 0 && n <= m_heap.size());
 
     size_t i = idx;
     size_t j = i * 2 + 1;
@@ -125,7 +125,7 @@ void HeapTimer::_del(size_t idx)
 
 void HeapTimer::adjust(int id, int timeout)
 {
-    assert(!m_heap.size() && ref.count(id) > 0);
+    assert(!m_heap.empty() && ref.count(id) > 0);
     m_heap[ref[id]].expires = Clock::now() + MS(timeout);
 
     shiftDown(ref[id], m_heap.size());
