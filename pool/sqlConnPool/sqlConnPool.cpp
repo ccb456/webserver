@@ -1,6 +1,6 @@
 #include "sqlConnPool.h"
 
-inline SqlConnPool::SqlConnPool() :usingConnCnt(0), freeConnCnt(0), maxConnCnt(8)
+SqlConnPool::SqlConnPool() :usingConnCnt(0), freeConnCnt(0), maxConnCnt(8)
 {    
 }
 

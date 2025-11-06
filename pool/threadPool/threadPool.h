@@ -64,7 +64,7 @@ private:
     bool isStop;
 
     static const int STEP = 2;  // 每次增加线程的个数
-    SqlConnPool* connPool;
+    SqlConnPool* connsPool;
 
 };
 
@@ -82,7 +82,7 @@ ThreadPool<T>::ThreadPool(int min, int max, SqlConnPool* connPool)
     exitNum = 0;
     isStop = false;
     minNum = min;
-    this->connPool = connPool;
+    connsPool = connPool;
 
     for(int i = 0; i < min; i++)
     {
@@ -194,7 +194,7 @@ void ThreadPool<T>::work(void* arg)
     while(true)
     {
         int aliveCnt = pool->getAliveNum();
-        int busyCnt = pool->getBusyNum();
+        // int busyCnt = pool->getBusyNum();
         int exitCnt = pool->getExitNum();
 
         while(pool->getSize() == 0 && !pool->isStop)
@@ -233,7 +233,7 @@ void ThreadPool<T>::work(void* arg)
         ++pool->busyNum;
         pool->poolMutex.unlock();
 
-        SqlConnRAII sqlConn(&task->mysql, connPool);
+        SqlConnRAII sqlConn(&task->m_mysql, pool->connsPool);
         // 任务的执行函数
         task->process();
 

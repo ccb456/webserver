@@ -65,7 +65,7 @@ class HttpConn
 
     public:
         static int epollfd;
-        static std::atomic<int> userCount;
+        static std::atomic_int userCount;
         
         /* mysql 链接*/
         MYSQL* m_mysql;

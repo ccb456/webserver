@@ -1,11 +1,11 @@
 #include "timerHeap.h"
 
-inline HeapTimer::HeapTimer()
+HeapTimer::HeapTimer()
 {
     m_heap.resize(64);
 }
 
-inline HeapTimer::~HeapTimer()
+HeapTimer::~HeapTimer()
 {
     clear();
 }
@@ -40,7 +40,7 @@ void HeapTimer::swapNode(size_t i, size_t j)
     ref[ m_heap[j].id] = j;
 }
 
-bool HeapTimer::shitfDown(size_t idx, size_t n)
+bool HeapTimer::shiftDown(size_t idx, size_t n)
 {
     assert(idx >= 0 && idx < m_heap.size());
     assert(n >= 0 && n < m_heap.size());
@@ -72,7 +72,7 @@ void HeapTimer::add(int id, int timeout, const TimeoutCallBack& cb)
     {
         n = m_heap.size();
         ref[id] = n;
-        m_heap.emplace_back(id, Clock::now() + MS(timeout), cb);
+        m_heap.push_back({id, Clock::now() + MS(timeout), cb});
         shiftUp(n);
     }
     else
@@ -82,7 +82,7 @@ void HeapTimer::add(int id, int timeout, const TimeoutCallBack& cb)
         m_heap[n].expires = Clock::now() + MS(timeout);
         m_heap[n].cb = cb;
 
-        if(!shitfDown(n, m_heap.size()))
+        if(!shiftDown(n, m_heap.size()))
         {
             shiftUp(n);
         }
@@ -113,7 +113,7 @@ void HeapTimer::_del(size_t idx)
     if(i < n)
     {
         swapNode(i, n);
-        if(!shitfDown(i, n))
+        if(!shiftDown(i, n))
         {
             shiftUp(i);
         }
@@ -128,7 +128,7 @@ void HeapTimer::adjust(int id, int timeout)
     assert(!m_heap.size() && ref.count(id) > 0);
     m_heap[ref[id]].expires = Clock::now() + MS(timeout);
 
-    shitfDown(ref[id], m_heap.size());
+    shiftDown(ref[id], m_heap.size());
     
 }
 

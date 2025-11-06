@@ -13,7 +13,7 @@ const string error_500_form = "There was an unusual problem serving the request 
 
 
 int HttpConn::epollfd = -1;
-std::atomic<int> HttpConn::userCount = 0;
+std::atomic_int HttpConn::userCount(0);
 
 string rootPath = "/home/ccb/code/Webserver/resources";
 
@@ -117,7 +117,7 @@ void HttpConn::initMySQLResult(SqlConnPool* connPool)
     // int num_fields = mysql_num_fields(result);
 
     //返回所有字段结构的数组
-    MYSQL_FIELD *fields = mysql_fetch_fields(result);
+    mysql_fetch_fields(result);
 
     //从结果集中获取下一行，将对应的用户名和密码，存入map中
     while (MYSQL_ROW row = mysql_fetch_row(result))
@@ -522,9 +522,7 @@ bool HttpConn::addStatuLine(int code, string text)
 
 bool HttpConn::addHeader(int len)
 {
-    addContentLen(len);
-    addIsKeepLive();
-    addBlankLine();
+    return  addContentLen(len) && addIsKeepLive() && addBlankLine();
 }
 
 bool HttpConn::addContentLen(int len)

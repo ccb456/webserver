@@ -79,7 +79,6 @@ int main(int argc, char** argv)
     SqlConnPool* connPool = SqlConnPool::getInstance();
     connPool->init("localhost", 3306, "ccb", "123456", "webserver", 4);
       /* 创建线程池 */
-    // ThreadPool<HttpConn>* threadsPool = new ThreadPool<HttpConn>(1,4, connPool);
     std::shared_ptr<ThreadPool<HttpConn>> threadsPool(new ThreadPool<HttpConn>(1,4, connPool));
     
     /* 预先创建HTTP连接 */
@@ -174,7 +173,9 @@ int main(int argc, char** argv)
                     users[connfd].init(connfd, clntAddr);
     
                     // 设置定时器
-                    heapTimer.add(connfd, 3 * TIMESLOT, timer_handler);
+                    heapTimer.add(connfd, 3 * TIMESLOT, [&user = users[connfd]]() { 
+                    user.closeConn(); 
+                });
 
                 }
 
@@ -190,7 +191,7 @@ int main(int argc, char** argv)
             /* 处理信号 */
             else if((sockfd == pipefd[0]) && (events[i].events & EPOLLIN))
             {
-                int sig = -1;
+                // int sig = -1;
                 char signals[1024];
                 ret = recv(sockfd, signals, sizeof(signals), 0);
                 if(ret <= 0)

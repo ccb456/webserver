@@ -46,7 +46,7 @@ public:
 private:
     void _del(size_t i);
     void shiftUp(size_t i);
-    bool shitfDown(size_t idx, size_t n);
+    bool shiftDown(size_t idx, size_t n);
     void swapNode(size_t i, size_t j);
 
 private:
