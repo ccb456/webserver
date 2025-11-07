@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <iostream>
 #include <memory>
+#include <libgen.h>  // 用于dirname
 
 #include "./http/httpConn.h"
 #include "./pool/threadPool/threadPool.h"
@@ -62,6 +63,38 @@ void cb_func(HttpConn* httpconn)
     httpconn->closeConn();
 }
 
+// 新增：计算资源根目录（程序所在目录 + "/resources"）
+string getRootPath(const char* argv0) 
+{
+    // 1. 将程序路径转换为绝对路径（如：/home/ccb/Code/project/webserver/build/Webserver）
+    char* absPath = realpath(argv0, nullptr);
+    if (!absPath) 
+    {
+        perror("realpath failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // 2. 获取程序所在目录（如：/home/ccb/Code/project/webserver/build）
+    char* dir = dirname(absPath);
+    std::string root(dir);
+
+    // 3. 剔除路径中的"build"目录（关键步骤）
+    size_t buildPos = root.find("/build");
+    if (buildPos != std::string::npos) 
+    {
+        // 截取到"build"的前一级目录（如：/home/ccb/Code/project/webserver）
+        root = root.substr(0, buildPos);
+    }
+
+    // 4. 拼接资源目录（最终：/home/ccb/Code/project/webserver/resources）
+    root += "/resources";
+
+    free(absPath);
+    return root;
+}
+
+
+
 
 int main(int argc, char** argv)
 {
@@ -72,6 +105,12 @@ int main(int argc, char** argv)
         #endif
         return 1;
     }
+
+    // 关键：计算并设置全局rootPath
+    rootPath = getRootPath(argv[0]);
+    #ifdef debug
+        std::cout << "动态获取的资源根目录: " << rootPath << std::endl;
+    #endif
 
     string ip = argv[1];
     int port = atoi(argv[2]);

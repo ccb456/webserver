@@ -23,6 +23,7 @@
 
 using std::string;
 
+extern std::string rootPath;
 
 class HttpConn
 {

@@ -15,7 +15,7 @@ const string error_500_form = "There was an unusual problem serving the request 
 int HttpConn::epollfd = -1;
 std::atomic_int HttpConn::userCount(0);
 
-string rootPath = "/home/ccb/code/Webserver/resources";
+string rootPath;
 
 /* 保存数据库中的用户信息 */
 std::unordered_map<string, string> usersInfo;
@@ -359,7 +359,7 @@ HttpConn::HTTP_CODE HttpConn::do_request()
             flag = m_url[idx + 1];
         }
         // POST请求
-        if(isCGI && (flag == '2' || flag == '3'))
+        if((flag == '2' || flag == '3'))
         {
 
             // 将user=123&passwd=123提取出来
@@ -372,8 +372,9 @@ HttpConn::HTTP_CODE HttpConn::do_request()
             /* 注册 */
             if(flag == '3')
             {
+                // 修正后的SQL拼接
                 string sql = "insert into user(username, passwd) values('";
-                sql += name + "'" + pwd + ")";
+                sql += name + "', '" + pwd + "')";  // 补充逗号和单引号
 
                 // 用户名已经存在了
                 if(usersInfo.count(name))
@@ -393,6 +394,9 @@ HttpConn::HTTP_CODE HttpConn::do_request()
                     }
                     else
                     {
+                        #ifdef debug
+                            std::cout << " mysql_errno(m_mysql) : " << mysql_errno(m_mysql) << std::endl;
+                        #endif
                         m_url = "/registerError.html";
                     }
                 }
