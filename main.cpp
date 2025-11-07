@@ -122,8 +122,9 @@ int main(int argc, char** argv)
     /* 创建数据库连接池 */
     SqlConnPool* connPool = SqlConnPool::getInstance();
     connPool->init("localhost", 3306, "ccb", "123456", "webserver", 4);
-      /* 创建线程池 */
-    std::shared_ptr<ThreadPool<HttpConn>> threadsPool(new ThreadPool<HttpConn>(1,4, connPool));
+    
+    /* 创建线程池 */
+    std::shared_ptr<ThreadPool<HttpConn>> threadsPool(new ThreadPool<HttpConn>(8, 16, connPool));
     
     /* 预先创建HTTP连接 */
     std::vector<HttpConn> users(MAX_FD);

@@ -1,5 +1,5 @@
 #ifndef THREADPOOL_H
-#define THREADpOOL_H
+#define THREADPOOL_H
 
 #include <iostream>
 #include <queue>
@@ -130,39 +130,38 @@ ThreadPool<T>::~ThreadPool()
 
 }
 
+
 template<typename T>
 T* ThreadPool<T>::getTask()
 {
-    if(getSize() == 0)
-        return nullptr;
-    
+    // 现在 getTask 只在持有 queueMutex 的情况下被调用（或者自己加锁）
     std::lock_guard<std::mutex> lock(queueMutex);
+    if (taskQueue.empty())
+        return nullptr;
     T* task = taskQueue.front();
     taskQueue.pop();
-
     return task;
 }
+
 
 template<typename T>
 bool ThreadPool<T>::addTask(T* task)
 {
-    if(!isStop)
+    if (isStop) return false;
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         taskQueue.push(task);
-        notEmpty.notify_one();
-    
-        return true;
     }
-
-    return false;
+    // notify after releasing queueMutex (notify can be outside, but safe either way)
+    notEmpty.notify_one();
+    return true;
 }
 
 template<typename T>
 int ThreadPool<T>::getSize()
 {
     std::lock_guard<std::mutex> lock(queueMutex);
-    return taskQueue.size();
+    return (int)taskQueue.size();
 }
 
 template<typename T>
@@ -191,57 +190,71 @@ void ThreadPool<T>::work(void* arg)
 {
     ThreadPool<T>* pool = static_cast<ThreadPool<T>*>(arg);
 
-    while(true)
+    while (true)
     {
-        int aliveCnt = pool->getAliveNum();
-        // int busyCnt = pool->getBusyNum();
-        int exitCnt = pool->getExitNum();
+        T* task = nullptr;
+        {   // 作用域：操作队列的临界区
+            std::unique_lock<std::mutex> qlock(pool->queueMutex);
 
-        while(pool->getSize() == 0 && !pool->isStop)
-        {
-            std::unique_lock<std::mutex> lock(pool->poolMutex);
-            pool->notEmpty.wait(lock);
-            if(exitCnt > 0 && !pool->isStop)
+            // 等待：队列非空 OR 线程池停止 OR 要求缩容（exitNum>0）
+            pool->notEmpty.wait(qlock, [&]() {
+                return !pool->taskQueue.empty() || pool->isStop || pool->getExitNum() > 0;
+            });
+
+            // 如果要停止，直接退出
+            if (pool->isStop) 
             {
-                if(aliveCnt - 1 > pool->minNum)
-                {
-                    #ifdef debug
-                        cout << "thread: " << std::this_thread::get_id() << " closed !!!" << endl;
-                    #endif
+#ifdef debug
+                cout << "thread: " << std::this_thread::get_id() << " closed (stop) !!!" << endl;
+#endif
+                return;
+            }
 
+            // 缩容逻辑：若管理线程设置了 exitNum，并且当前线程数 > minNum，则自己退出
+            if (pool->getExitNum() > 0) 
+            {
+                std::lock_guard<std::mutex> lock(pool->poolMutex);
+                if (pool->aliveNum > pool->minNum) {
                     --pool->exitNum;
                     --pool->aliveNum;
-
-                    lock.unlock();
+#ifdef debug
+                    cout << "thread: " << std::this_thread::get_id() << " closed (shrink) !!!" << endl;
+#endif
                     return;
                 }
             }
-            
-        }
 
-        if(pool->isStop)
+            // 从队列取一个任务（确保在 queueMutex 下）
+            if (!pool->taskQueue.empty()) 
+            {
+                task = pool->taskQueue.front();
+                pool->taskQueue.pop();
+            }
+        } // 释放 queueMutex
+
+        if (task == nullptr) 
         {
-            #ifdef debug
-                cout << "thread: " << std::this_thread::get_id() << " closed !!!" << endl;
-            #endif
-            return;
+            // 可能由于缩容/stop 等原因，没有任务，继续循环
+            continue;
         }
 
-        T* task = pool->getTask();
-        
-        pool->poolMutex.lock();
-        ++pool->busyNum;
-        pool->poolMutex.unlock();
+        {   // 增加 busyNum（保护 poolMutex）
+            std::lock_guard<std::mutex> lock(pool->poolMutex);
+            ++pool->busyNum;
+        }
 
-        SqlConnRAII sqlConn(&task->m_mysql, pool->connsPool);
-        // 任务的执行函数
-        task->process();
+        // 执行任务：在此期间不应持有任何线程池级锁
+        {
+            // 防御性：确保 task->m_mysql 是可用地址，SqlConnRAII 构造内会 assert
+            SqlConnRAII sqlConn(&task->m_mysql, pool->connsPool);
+            task->process();
+        }
 
-        pool->poolMutex.lock();
-        --pool->busyNum;
-        pool->poolMutex.unlock();
+        {   // 任务完成，减少 busyNum
+            std::lock_guard<std::mutex> lock(pool->poolMutex);
+            --pool->busyNum;
+        }
     }
-
 }
 
 template<typename T>

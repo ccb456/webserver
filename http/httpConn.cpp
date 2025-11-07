@@ -317,6 +317,8 @@ HttpConn::HTTP_CODE HttpConn::paraseRequestHeader(string text)
     }
     else if (key == "Connection") 
     {
+        std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+        // std::cout << value << std::endl;
         isKeepLive = (value == "keep-alive" ? true : false);
     }
     else

@@ -8,6 +8,7 @@ class SqlConnRAII
 public:
     SqlConnRAII(MYSQL** sql, SqlConnPool* connpool)
     {
+        assert(sql && connpool);
         *sql = connpool->getConn();
         mysql = *sql;
         connPool = connpool; 
