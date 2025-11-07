@@ -7,8 +7,10 @@
 #include <mutex>
 #include <thread>
 #include <semaphore.h>
+#include <iostream>
 #include <assert.h>
 #include <memory>
+#include "../../constance.h"
 
 class SqlConnPool
 {
